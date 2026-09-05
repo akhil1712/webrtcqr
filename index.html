@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Serverless QR WebRTC Chat</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; display: flex; justify-content: center; padding: 20px; }
+    .card { background: #1e293b; width: 100%; max-width: 480px; padding: 20px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    h2 { font-size: 1.25rem; margin-bottom: 12px; text-align: center; }
+    .btn { width: 100%; padding: 12px; margin: 8px 0; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }
+    .btn:disabled { background: #475569; cursor: not-allowed; }
+    .step { display: none; margin-top: 16px; background: #334155; padding: 16px; border-radius: 8px; }
+    .step.active { display: block; }
+    #qrcode { display: flex; justify-content: center; margin: 16px 0; background: #fff; padding: 16px; border-radius: 8px; }
+    #reader { width: 100%; border-radius: 8px; overflow: hidden; margin-top: 10px; }
+    .chat-box { height: 250px; overflow-y: auto; background: #0f172a; padding: 12px; border-radius: 6px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .msg { padding: 8px 12px; border-radius: 6px; max-width: 80%; font-size: 0.9rem; }
+    .msg.local { align-self: flex-end; background: #2563eb; }
+    .msg.remote { align-self: flex-start; background: #475569; }
+    .input-row { display: flex; gap: 8px; }
+    input { flex: 1; padding: 10px; border-radius: 6px; border: none; background: #0f172a; color: #fff; }
+    .status { text-align: center; font-size: 0.85rem; color: #38bdf8; margin-top: 8px; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>Serverless QR WebRTC</h2>
+  <div id="status" class="status">Select your role to start</div>
+
+  <div id="step-role" class="step active">
+    <button class="btn" onclick="initHost()">Host Meeting (Peer A)</button>
+    <button class="btn" onclick="initJoiner()">Join Meeting (Peer B)</button>
+  </div>
+
+  <div id="step-qr" class="step">
+    <div id="qr-instruction" style="font-size: 0.9rem; text-align: center;"></div>
+    <div id="qrcode"></div>
+    <button id="scan-next-btn" class="btn" style="display:none;" onclick="startScanner()">Scan Peer's Response QR</button>
+    <div id="reader"></div>
+  </div>
+
+  <div id="step-chat" class="step">
+    <div class="chat-box" id="messages"></div>
+    <div class="input-row">
+      <input type="text" id="msgInput" placeholder="Type a message...">
+      <button class="btn" style="width: auto;" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  let dataChannel;
+  let html5QrcodeScanner;
+
+  const statusEl = document.getElementById('status');
+  const qrInstruction = document.getElementById('qr-instruction');
+
+  function setStep(stepId) {
+    document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+    document.getElementById(stepId).classList.add('active');
+  }
+
+  // Compress SDP to fit into clean, high-scannability QR codes
+  function compressSdp(sdp) {
+    return LZString.compressToEncodedURIComponent(JSON.stringify(sdp));
+  }
+
+  function decompressSdp(compressed) {
+    return JSON.parse(LZString.decompressFromEncodedURIComponent(compressed));
+  }
+
+  // Wait for all ICE candidates to gather so they are bundled into a single SDP
+  function waitForIceGathering() {
+    return new Promise(resolve => {
+      if (pc.iceGatheringState === 'complete') {
+        resolve();
+      } else {
+        const check = () => {
+          if (pc.iceGatheringState === 'complete') {
+            pc.removeEventListener('icegatheringstatechange', check);
+            resolve();
+          }
+        };
+        pc.addEventListener('icegatheringstatechange', check);
+      }
+    });
+  }
+
+  function displayQR(data) {
+    document.getElementById('qrcode').innerHTML = "";
+    new QRCode(document.getElementById('qrcode'), {
+      text: data,
+      width: 256,
+      height: 256,
+      correctLevel: QRCode.CorrectLevel.L
+    });
+  }
+
+function startScanner(onSuccess) {
+  document.getElementById('scan-next-btn').style.display = 'none';
+  html5QrcodeScanner = new Html5Qrcode("reader");
+
+  const qrConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
+
+  // Attempt 1: Request environment (back) camera
+  html5QrcodeScanner.start(
+    { facingMode: "environment" },
+    qrConfig,
+    (decodedText) => {
+      html5QrcodeScanner.stop().then(() => {
+        document.getElementById('reader').innerHTML = "";
+        onSuccess(decodedText);
+      });
+    },
+    (err) => { /* Ignore frame-by-frame read errors */ }
+  ).catch(() => {
+    // Attempt 2: Fall back to any available camera if rear camera fails
+    statusEl.textContent = "Rear camera unavailable. Requesting default camera...";
+    
+    html5QrcodeScanner.start(
+      true, // Use standard camera fallback
+      qrConfig,
+      (decodedText) => {
+        html5QrcodeScanner.stop().then(() => {
+          document.getElementById('reader').innerHTML = "";
+          onSuccess(decodedText);
+        });
+      },
+      (err) => {}
+    ).catch((finalErr) => {
+      statusEl.textContent = `Camera Error: ${finalErr.message || finalErr}. Ensure page is loaded via HTTPS.`;
+    });
+  });
+}
+
+  // --- PEER A (HOST) FLOW ---
+  async function initHost() {
+    statusEl.textContent = "Gathering local network pathways...";
+    setStep('step-qr');
+
+    dataChannel = pc.createDataChannel("chat");
+    bindDataChannelEvents(dataChannel);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitForIceGathering();
+
+    const compressedOffer = compressSdp(pc.localDescription);
+    displayQR(compressedOffer);
+    
+    qrInstruction.textContent = "1. Show this QR Code to Peer B to scan.";
+    document.getElementById('scan-next-btn').style.display = 'block';
+    statusEl.textContent = "Offer ready. Waiting for Peer B to scan.";
+  }
+
+  function startHostScanner() {
+    qrInstruction.textContent = "2. Scan the Answer QR generated by Peer B.";
+    document.getElementById('qrcode').innerHTML = "";
+    startScanner(async (scannedAnswer) => {
+      statusEl.textContent = "Connecting to Peer B...";
+      const answer = decompressSdp(scannedAnswer);
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+  }
+  document.getElementById('scan-next-btn').onclick = startHostScanner;
+
+  // --- PEER B (JOINER) FLOW ---
+  function initJoiner() {
+    setStep('step-qr');
+    qrInstruction.textContent = "Scan Peer A's Offer QR Code.";
+    statusEl.textContent = "Opening camera...";
+
+    pc.ondatachannel = (e) => {
+      dataChannel = e.channel;
+      bindDataChannelEvents(dataChannel);
+    };
+
+    startScanner(async (scannedOffer) => {
+      statusEl.textContent = "Offer scanned. Generating Answer...";
+      const offer = decompressSdp(scannedOffer);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitForIceGathering();
+
+      const compressedAnswer = compressSdp(pc.localDescription);
+      displayQR(compressedAnswer);
+      
+      qrInstruction.textContent = "Show this Answer QR back to Peer A.";
+      statusEl.textContent = "Answer ready. Let Peer A scan this QR.";
+    });
+  }
+
+  // --- DATA CHANNEL & UI CHAT ---
+  function bindDataChannelEvents(channel) {
+    channel.onopen = () => {
+      statusEl.textContent = "P2P Connection Established!";
+      setStep('step-chat');
+    };
+
+    channel.onmessage = (e) => {
+      addMessage(e.data, 'remote');
+    };
+  }
+
+  function sendMessage() {
+    const input = document.getElementById('msgInput');
+    const text = input.value.trim();
+    if (text && dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send(text);
+      addMessage(text, 'local');
+      input.value = '';
+    }
+  }
+
+  function addMessage(text, type) {
+    const box = document.getElementById('messages');
+    const msg = document.createElement('div');
+    msg.className = `msg ${type}`;
+    msg.textContent = text;
+    box.appendChild(msg);
+    box.scrollTop = box.scrollHeight;
+  }
+</script>
+</body>
+</html>
