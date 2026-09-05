@@ -94,52 +94,71 @@
     });
   }
 
-  function displayQR(data) {
-    document.getElementById('qrcode').innerHTML = "";
-    new QRCode(document.getElementById('qrcode'), {
-      text: data,
-      width: 256,
-      height: 256,
-      correctLevel: QRCode.CorrectLevel.L
-    });
-  }
+ // Render a larger QR code with white padding for maximum camera contrast
+function displayQR(data) {
+  const qrContainer = document.getElementById('qrcode');
+  qrContainer.innerHTML = "";
+  new QRCode(qrContainer, {
+    text: data,
+    width: 300,  // Increased from 256 for larger pixel matrix
+    height: 300,
+    correctLevel: QRCode.CorrectLevel.L // Lowest error correction = lower density QR
+  });
+}
 
-function startScanner(onSuccess) {
+// Enhanced scanner with HD video capture and native barcode detection
+async function startScanner(onSuccess) {
   document.getElementById('scan-next-btn').style.display = 'none';
   html5QrcodeScanner = new Html5Qrcode("reader");
 
-  const qrConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
-
-  // Attempt 1: Request environment (back) camera
-  html5QrcodeScanner.start(
-    { facingMode: "environment" },
-    qrConfig,
-    (decodedText) => {
-      html5QrcodeScanner.stop().then(() => {
-        document.getElementById('reader').innerHTML = "";
-        onSuccess(decodedText);
-      });
+  // Force higher camera resolution & enable native hardware QR reader
+  const qrConfig = {
+    fps: 15,
+    qrbox: (viewfinderWidth, viewfinderHeight) => {
+      const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+      return { width: Math.floor(minEdge * 0.8), height: Math.floor(minEdge * 0.8) };
     },
-    (err) => { /* Ignore frame-by-frame read errors */ }
-  ).catch(() => {
-    // Attempt 2: Fall back to any available camera if rear camera fails
-    statusEl.textContent = "Rear camera unavailable. Requesting default camera...";
-    
-    html5QrcodeScanner.start(
-      true, // Use standard camera fallback
-      qrConfig,
-      (decodedText) => {
-        html5QrcodeScanner.stop().then(() => {
-          document.getElementById('reader').innerHTML = "";
-          onSuccess(decodedText);
-        });
-      },
-      (err) => {}
-    ).catch((finalErr) => {
-      statusEl.textContent = `Camera Error: ${finalErr.message || finalErr}. Ensure page is loaded via HTTPS.`;
+    experimentalFeatures: {
+      useBarCodeDetectorIfSupported: true // Native iOS/Android fast scanner
+    },
+    videoConstraints: {
+      facingMode: { ideal: "environment" },
+      width: { min: 640, ideal: 1280, max: 1920 },
+      height: { min: 480, ideal: 720, max: 1080 }
+    }
+  };
+
+  const handleScanSuccess = (decodedText) => {
+    html5QrcodeScanner.stop().then(() => {
+      document.getElementById('reader').innerHTML = "";
+      onSuccess(decodedText);
     });
-  });
+  };
+
+  try {
+    // Attempt camera start with environment (rear) camera
+    await html5QrcodeScanner.start(
+      { facingMode: "environment" },
+      qrConfig,
+      handleScanSuccess,
+      () => {} // Suppress failed frame parsing logs
+    );
+  } catch (err) {
+    console.warn("Back camera HD failed, falling back to basic camera access...", err);
+    try {
+      // Fallback for strict devices
+      await html5QrcodeScanner.start(
+        { facingMode: "user" },
+        { fps: 10, qrbox: { width: 220, height: 220 } },
+        handleScanSuccess,
+        () => {}
+      );
+    } catch (finalErr) {
+      statusEl.textContent = `Scanner Error: ${finalErr.message || finalErr}`;
+    }
+  }
 }
+
 
   // --- PEER A (HOST) FLOW ---
   async function initHost() {
