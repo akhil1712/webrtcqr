@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>4-Part QR WebRTC Chat</title>
+  <title>4-Part QR WebRTC Chat & Video Call</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
@@ -11,17 +11,18 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
     body { background: #0f172a; color: #f8fafc; display: flex; justify-content: center; padding: 16px; }
-    .card { background: #1e293b; width: 100%; max-width: 480px; padding: 20px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    .card { background: #1e293b; width: 100%; max-width: 500px; padding: 20px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
     h2 { font-size: 1.2rem; margin-bottom: 12px; text-align: center; }
     .btn { width: 100%; padding: 12px; margin: 6px 0; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }
     .btn-secondary { background: #475569; }
+    .btn-danger { background: #dc2626; }
     .step { display: none; margin-top: 12px; background: #334155; padding: 16px; border-radius: 8px; }
     .step.active { display: block; }
     
+    /* QR UI */
     .qr-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
     .tab-btn { flex: 1; padding: 8px; background: #1e293b; border: 1px solid #475569; color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
     .tab-btn.active { background: #2563eb; border-color: #3b82f6; }
-    
     #qrcode { display: flex; justify-content: center; margin: 12px 0; background: #fff; padding: 16px; border-radius: 8px; }
     #reader { width: 100%; border-radius: 8px; overflow: hidden; margin-top: 10px; }
     
@@ -29,12 +30,28 @@
     .track-pill { flex: 1; text-align: center; padding: 6px; background: #1e293b; border-radius: 4px; font-size: 0.8rem; font-weight: bold; color: #94a3b8; }
     .track-pill.scanned { background: #22c55e; color: #fff; }
 
+    /* Dashboard Navigation */
+    .nav-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .nav-btn { flex: 1; padding: 10px; background: #0f172a; border: 1px solid #475569; color: #94a3b8; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    .nav-btn.active { background: #2563eb; color: #fff; border-color: #3b82f6; }
+
+    /* Chat UI */
+    .chat-view { display: flex; flex-direction: column; }
     .chat-box { height: 260px; overflow-y: auto; background: #0f172a; padding: 12px; border-radius: 6px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
     .msg { padding: 8px 12px; border-radius: 6px; max-width: 80%; font-size: 0.9rem; word-wrap: break-word; }
     .msg.local { align-self: flex-end; background: #2563eb; }
     .msg.remote { align-self: flex-start; background: #475569; }
+    .msg.system { align-self: center; background: transparent; color: #38bdf8; font-size: 0.8rem; }
     .input-row { display: flex; gap: 8px; }
     input { flex: 1; padding: 10px; border-radius: 6px; border: none; background: #0f172a; color: #fff; }
+
+    /* Video UI */
+    .video-view { display: none; flex-direction: column; gap: 10px; }
+    .video-container { position: relative; width: 100%; height: 280px; background: #0f172a; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    video { object-fit: cover; }
+    #remoteVideo { width: 100%; height: 100%; }
+    #localVideo { position: absolute; bottom: 12px; right: 12px; width: 90px; height: 120px; border-radius: 6px; border: 2px solid #2563eb; background: #000; }
+    .controls-row { display: flex; gap: 8px; }
     .status { text-align: center; font-size: 0.85rem; color: #38bdf8; margin-top: 6px; font-weight: bold; }
   </style>
 </head>
@@ -44,11 +61,13 @@
   <h2>4-Part QR WebRTC</h2>
   <div id="status" class="status">Select your role</div>
 
+  <!-- Role Selection -->
   <div id="step-role" class="step active">
     <button class="btn" onclick="initHost()">Host (Peer A)</button>
     <button class="btn btn-secondary" onclick="initJoiner()">Join (Peer B)</button>
   </div>
 
+  <!-- Display 4 QRs -->
   <div id="step-show-qr" class="step">
     <div id="qr-instruction" style="font-size: 0.85rem; text-align: center; margin-bottom: 8px;"></div>
     
@@ -63,6 +82,7 @@
     <button id="scan-response-btn" class="btn" style="display:none;" onclick="startHostScanner()">Scan Answer QRs (0/4)</button>
   </div>
 
+  <!-- Scan 4 QRs -->
   <div id="step-scan-qr" class="step">
     <div style="font-size: 0.85rem; text-align: center;">Scan all 4 QRs from the other device in any order:</div>
     
@@ -76,11 +96,34 @@
     <div id="reader"></div>
   </div>
 
-  <div id="step-chat" class="step">
-    <div class="chat-box" id="messages"></div>
-    <div class="input-row">
-      <input type="text" id="msgInput" placeholder="Type a message...">
-      <button class="btn" style="width: auto;" onclick="sendMessage()">Send</button>
+  <!-- Connected Mode Dashboard (Chat + Video) -->
+  <div id="step-dashboard" class="step">
+    <div class="nav-tabs">
+      <button class="nav-btn active" id="nav-chat" onclick="showView('chat')">💬 Chat</button>
+      <button class="nav-btn" id="nav-video" onclick="showView('video')">📹 Video Call</button>
+    </div>
+
+    <!-- Chat Interface -->
+    <div id="view-chat" class="chat-view">
+      <div class="chat-box" id="messages"></div>
+      <div class="input-row">
+        <input type="text" id="msgInput" placeholder="Type a message...">
+        <button class="btn" style="width: auto;" onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+
+    <!-- Video Call Interface -->
+    <div id="view-video" class="video-view">
+      <div class="video-container">
+        <video id="remoteVideo" autoplay playsinline></video>
+        <video id="localVideo" autoplay playsinline muted></video>
+      </div>
+      <div class="controls-row">
+        <button id="start-call-btn" class="btn" onclick="startVideoCall()">Start Video</button>
+        <button id="toggle-mic-btn" class="btn btn-secondary" style="display:none;" onclick="toggleAudio()">Mute</button>
+        <button id="toggle-cam-btn" class="btn btn-secondary" style="display:none;" onclick="toggleVideo()">Cam Off</button>
+        <button id="end-call-btn" class="btn btn-danger" style="display:none;" onclick="endVideoCall(true)">End</button>
+      </div>
     </div>
   </div>
 </div>
@@ -88,6 +131,7 @@
 <script>
   let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
   let dataChannel;
+  let localStream = null;
   let html5QrcodeScanner;
   
   let currentQrChunks = [];
@@ -103,6 +147,14 @@
     document.getElementById(stepId).classList.add('active');
   }
 
+  function showView(viewType) {
+    document.getElementById('nav-chat').classList.toggle('active', viewType === 'chat');
+    document.getElementById('nav-video').classList.toggle('active', viewType === 'video');
+    document.getElementById('view-chat').style.display = viewType === 'chat' ? 'flex' : 'none';
+    document.getElementById('view-video').style.display = viewType === 'video' ? 'flex' : 'none';
+  }
+
+  // --- SDP CHUNKING & REASSEMBLY ---
   function splitInto4Chunks(str) {
     const chunkSize = Math.ceil(str.length / TOTAL_PARTS);
     const chunks = [];
@@ -137,24 +189,16 @@
     });
   }
 
+  // --- QR DISPLAY & SCANNING ---
   function renderQrCode(data) {
     const qrContainer = document.getElementById('qrcode');
     qrContainer.innerHTML = "";
-    new QRCode(qrContainer, {
-      text: data,
-      width: 220,
-      height: 220,
-      correctLevel: QRCode.CorrectLevel.L
-    });
+    new QRCode(qrContainer, { text: data, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.L });
   }
 
   function switchQrTab(index) {
-    document.querySelectorAll('.tab-btn').forEach((btn, i) => {
-      btn.classList.toggle('active', i === index);
-    });
-    if (currentQrChunks[index]) {
-      renderQrCode(currentQrChunks[index]);
-    }
+    document.querySelectorAll('.tab-btn').forEach((btn, i) => btn.classList.toggle('active', i === index));
+    if (currentQrChunks[index]) renderQrCode(currentQrChunks[index]);
   }
 
   async function startMultiScanner(onComplete) {
@@ -168,7 +212,6 @@
 
     const handleScan = (decodedText) => {
       if (isScanningComplete) return;
-
       const p1 = decodedText.indexOf('|');
       const p2 = decodedText.indexOf('|', p1 + 1);
 
@@ -177,22 +220,18 @@
         const total = parseInt(decodedText.substring(p1 + 1, p2), 10);
         const chunkData = decodedText.substring(p2 + 1);
 
-        if (!isNaN(index) && total === TOTAL_PARTS) {
-          if (!receivedChunks[index]) {
-            receivedChunks[index] = chunkData;
-            updateScanTrackerUI();
+        if (!isNaN(index) && total === TOTAL_PARTS && !receivedChunks[index]) {
+          receivedChunks[index] = chunkData;
+          updateScanTrackerUI();
 
-            if (Object.keys(receivedChunks).length === TOTAL_PARTS) {
-              isScanningComplete = true;
-              html5QrcodeScanner.stop().then(() => {
-                document.getElementById('reader').innerHTML = "";
-                let fullString = "";
-                for (let i = 0; i < TOTAL_PARTS; i++) {
-                  fullString += receivedChunks[i];
-                }
-                onComplete(fullString);
-              });
-            }
+          if (Object.keys(receivedChunks).length === TOTAL_PARTS) {
+            isScanningComplete = true;
+            html5QrcodeScanner.stop().then(() => {
+              document.getElementById('reader').innerHTML = "";
+              let fullString = "";
+              for (let i = 0; i < TOTAL_PARTS; i++) fullString += receivedChunks[i];
+              onComplete(fullString);
+            });
           }
         }
       }
@@ -216,10 +255,10 @@
         pill.textContent = `Part ${i+1}`;
       }
     }
-    const count = Object.keys(receivedChunks).length;
-    statusEl.textContent = `Scanned ${count}/${TOTAL_PARTS} QR codes`;
+    statusEl.textContent = `Scanned ${Object.keys(receivedChunks).length}/${TOTAL_PARTS} QR codes`;
   }
 
+  // --- INITIAL QR HANDSHAKE ---
   async function initHost() {
     statusEl.textContent = "Gathering network candidates...";
     dataChannel = pc.createDataChannel("chat");
@@ -233,14 +272,14 @@
     setStep('step-show-qr');
     switchQrTab(0);
 
-    qrInstruction.textContent = "Show all 4 QRs (tabs above) to Peer B to scan.";
+    qrInstruction.textContent = "Show all 4 QRs to Peer B.";
     document.getElementById('scan-response-btn').style.display = 'block';
-    statusEl.textContent = "Offer QRs generated (4 Parts)";
+    statusEl.textContent = "Offer QRs generated";
   }
 
   function startHostScanner() {
     startMultiScanner(async (fullAnswerString) => {
-      statusEl.textContent = "All 4 parts scanned! Connecting...";
+      statusEl.textContent = "Connecting P2P session...";
       const answer = decompressSdp(fullAnswerString);
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
     });
@@ -253,7 +292,7 @@
     };
 
     startMultiScanner(async (fullOfferString) => {
-      statusEl.textContent = "Offer accepted. Generating Answer QRs...";
+      statusEl.textContent = "Offer scanned. Generating Answer QRs...";
       const offer = decompressSdp(fullOfferString);
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
@@ -267,23 +306,132 @@
 
       qrInstruction.textContent = "Show these 4 Answer QRs back to Peer A.";
       document.getElementById('scan-response-btn').style.display = 'none';
-      statusEl.textContent = "Answer QRs Ready (4 Parts)";
+      statusEl.textContent = "Answer QRs Ready";
     });
   }
 
+  // --- DATA CHANNEL & IN-BAND SIGNALING ---
   function bindDataChannelEvents(channel) {
     channel.onopen = () => {
-      statusEl.textContent = "Connected Direct (P2P)!";
-      setStep('step-chat');
+      statusEl.textContent = "Connected Direct (P2P)";
+      setStep('step-dashboard');
+      showView('chat');
+      addMessage("P2P Connection Established. You can now chat or start a video call!", "system");
     };
-    channel.onmessage = (e) => addMessage(e.data, 'remote');
+
+    channel.onmessage = async (e) => {
+      try {
+        const signal = JSON.parse(e.data);
+        if (signal.type === 'v-offer') handleRemoteVideoOffer(signal.sdp);
+        else if (signal.type === 'v-answer') handleRemoteVideoAnswer(signal.sdp);
+        else if (signal.type === 'v-ice') await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        else if (signal.type === 'v-end') endVideoCall(false);
+        else if (signal.type === 'chat') addMessage(signal.text, 'remote');
+      } catch (err) {
+        addMessage(e.data, 'remote');
+      }
+    };
   }
 
+  function sendSignal(data) {
+    if (dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send(JSON.stringify(data));
+    }
+  }
+
+  // --- VIDEO CALL ENGINE (RENEGOTIATION OVER DATA CHANNEL) ---
+  pc.ontrack = (event) => {
+    document.getElementById('remoteVideo').srcObject = event.streams[0];
+  };
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate && pc.remoteDescription && localStream) {
+      sendSignal({ type: 'v-ice', candidate: event.candidate });
+    }
+  };
+
+  async function getMediaStream() {
+    if (!localStream) {
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      document.getElementById('localVideo').srcObject = localStream;
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+  }
+
+  async function startVideoCall() {
+    showView('video');
+    statusEl.textContent = "Starting video stream...";
+    await getMediaStream();
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendSignal({ type: 'v-offer', sdp: pc.localDescription });
+    updateVideoControls(true);
+  }
+
+  async function handleRemoteVideoOffer(sdp) {
+    showView('video');
+    addMessage("Incoming video call...", "system");
+    await getMediaStream();
+
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    sendSignal({ type: 'v-answer', sdp: pc.localDescription });
+    updateVideoControls(true);
+    statusEl.textContent = "In Video Call";
+  }
+
+  async function handleRemoteVideoAnswer(sdp) {
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    statusEl.textContent = "In Video Call";
+  }
+
+  function endVideoCall(notifyPeer) {
+    if (notifyPeer) sendSignal({ type: 'v-end' });
+
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    document.getElementById('localVideo').srcObject = null;
+    document.getElementById('remoteVideo').srcObject = null;
+
+    updateVideoControls(false);
+    statusEl.textContent = "Video call ended";
+    addMessage("Video call ended.", "system");
+  }
+
+  function toggleAudio() {
+    if (localStream) {
+      const audioTrack = localStream.getAudioTracks()[0];
+      audioTrack.enabled = !audioTrack.enabled;
+      document.getElementById('toggle-mic-btn').textContent = audioTrack.enabled ? "Mute" : "Unmute";
+    }
+  }
+
+  function toggleVideo() {
+    if (localStream) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      videoTrack.enabled = !videoTrack.enabled;
+      document.getElementById('toggle-cam-btn').textContent = videoTrack.enabled ? "Cam Off" : "Cam On";
+    }
+  }
+
+  function updateVideoControls(inCall) {
+    document.getElementById('start-call-btn').style.display = inCall ? 'none' : 'block';
+    document.getElementById('toggle-mic-btn').style.display = inCall ? 'block' : 'none';
+    document.getElementById('toggle-cam-btn').style.display = inCall ? 'block' : 'none';
+    document.getElementById('end-call-btn').style.display = inCall ? 'block' : 'none';
+  }
+
+  // --- TEXT CHAT ENGINE ---
   function sendMessage() {
     const input = document.getElementById('msgInput');
     const text = input.value.trim();
     if (text && dataChannel && dataChannel.readyState === 'open') {
-      dataChannel.send(text);
+      sendSignal({ type: 'chat', text });
       addMessage(text, 'local');
       input.value = '';
     }
