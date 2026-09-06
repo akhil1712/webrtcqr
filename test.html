@@ -366,7 +366,7 @@
       localStream = await navigator.mediaDevices.getUserMedia({ video: {
         width: { max: 640 },
         height: { max: 480 },
-        frameRate: { max: 15 },
+        frameRate: { max: 10 },
         audio: true });
       document.getElementById('localVideo').srcObject = localStream;
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
