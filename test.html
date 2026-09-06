@@ -129,7 +129,12 @@
 </div>
 
 <script>
-  let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }] });
   let dataChannel;
   let localStream = null;
   let html5QrcodeScanner;
@@ -317,7 +322,7 @@
       setStep('step-dashboard');
       showView('chat');
       addMessage("P2P Connection Established. You can now chat or start a video call!", "system");
-    };
+      };
 
     channel.onmessage = async (e) => {
       try {
@@ -331,6 +336,12 @@
         addMessage(e.data, 'remote');
       }
     };
+        // Add inside bindDataChannelEvents(channel)
+    setInterval(() => {
+      if (dataChannel && dataChannel.readyState === 'open') {
+        dataChannel.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 20000);
   }
 
   function sendSignal(data) {
@@ -352,7 +363,11 @@
 
   async function getMediaStream() {
     if (!localStream) {
-      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStream = await navigator.mediaDevices.getUserMedia({ video: {
+        width: { max: 640 },
+        height: { max: 480 },
+        frameRate: { max: 15 },
+        audio: true });
       document.getElementById('localVideo').srcObject = localStream;
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     }
