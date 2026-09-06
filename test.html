@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>4-Part QR WebRTC Chat</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; display: flex; justify-content: center; padding: 16px; }
+    .card { background: #1e293b; width: 100%; max-width: 480px; padding: 20px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    h2 { font-size: 1.2rem; margin-bottom: 12px; text-align: center; }
+    .btn { width: 100%; padding: 12px; margin: 6px 0; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }
+    .btn-secondary { background: #475569; }
+    .step { display: none; margin-top: 12px; background: #334155; padding: 16px; border-radius: 8px; }
+    .step.active { display: block; }
+    
+    .qr-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+    .tab-btn { flex: 1; padding: 8px; background: #1e293b; border: 1px solid #475569; color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
+    .tab-btn.active { background: #2563eb; border-color: #3b82f6; }
+    
+    #qrcode { display: flex; justify-content: center; margin: 12px 0; background: #fff; padding: 16px; border-radius: 8px; }
+    #reader { width: 100%; border-radius: 8px; overflow: hidden; margin-top: 10px; }
+    
+    .scan-tracker { display: flex; justify-content: space-between; margin: 10px 0; gap: 6px; }
+    .track-pill { flex: 1; text-align: center; padding: 6px; background: #1e293b; border-radius: 4px; font-size: 0.8rem; font-weight: bold; color: #94a3b8; }
+    .track-pill.scanned { background: #22c55e; color: #fff; }
+
+    .chat-box { height: 260px; overflow-y: auto; background: #0f172a; padding: 12px; border-radius: 6px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .msg { padding: 8px 12px; border-radius: 6px; max-width: 80%; font-size: 0.9rem; word-wrap: break-word; }
+    .msg.local { align-self: flex-end; background: #2563eb; }
+    .msg.remote { align-self: flex-start; background: #475569; }
+    .input-row { display: flex; gap: 8px; }
+    input { flex: 1; padding: 10px; border-radius: 6px; border: none; background: #0f172a; color: #fff; }
+    .status { text-align: center; font-size: 0.85rem; color: #38bdf8; margin-top: 6px; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>4-Part QR WebRTC</h2>
+  <div id="status" class="status">Select your role</div>
+
+  <div id="step-role" class="step active">
+    <button class="btn" onclick="initHost()">Host (Peer A)</button>
+    <button class="btn btn-secondary" onclick="initJoiner()">Join (Peer B)</button>
+  </div>
+
+  <div id="step-show-qr" class="step">
+    <div id="qr-instruction" style="font-size: 0.85rem; text-align: center; margin-bottom: 8px;"></div>
+    
+    <div class="qr-tabs">
+      <button class="tab-btn active" id="tab-0" onclick="switchQrTab(0)">Part 1</button>
+      <button class="tab-btn" id="tab-1" onclick="switchQrTab(1)">Part 2</button>
+      <button class="tab-btn" id="tab-2" onclick="switchQrTab(2)">Part 3</button>
+      <button class="tab-btn" id="tab-3" onclick="switchQrTab(3)">Part 4</button>
+    </div>
+
+    <div id="qrcode"></div>
+    <button id="scan-response-btn" class="btn" style="display:none;" onclick="startHostScanner()">Scan Answer QRs (0/4)</button>
+  </div>
+
+  <div id="step-scan-qr" class="step">
+    <div style="font-size: 0.85rem; text-align: center;">Scan all 4 QRs from the other device in any order:</div>
+    
+    <div class="scan-tracker">
+      <div id="track-0" class="track-pill">Part 1</div>
+      <div id="track-1" class="track-pill">Part 2</div>
+      <div id="track-2" class="track-pill">Part 3</div>
+      <div id="track-3" class="track-pill">Part 4</div>
+    </div>
+    
+    <div id="reader"></div>
+  </div>
+
+  <div id="step-chat" class="step">
+    <div class="chat-box" id="messages"></div>
+    <div class="input-row">
+      <input type="text" id="msgInput" placeholder="Type a message...">
+      <button class="btn" style="width: auto;" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  let dataChannel;
+  let html5QrcodeScanner;
+  
+  let currentQrChunks = [];
+  let receivedChunks = {};
+  let isScanningComplete = false;
+  const TOTAL_PARTS = 4;
+
+  const statusEl = document.getElementById('status');
+  const qrInstruction = document.getElementById('qr-instruction');
+
+  function setStep(stepId) {
+    document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+    document.getElementById(stepId).classList.add('active');
+  }
+
+  function splitInto4Chunks(str) {
+    const chunkSize = Math.ceil(str.length / TOTAL_PARTS);
+    const chunks = [];
+    for (let i = 0; i < TOTAL_PARTS; i++) {
+      const partData = str.slice(i * chunkSize, (i + 1) * chunkSize);
+      chunks.push(`${i}|${TOTAL_PARTS}|${partData}`);
+    }
+    return chunks;
+  }
+
+  function compressSdp(sdp) {
+    const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(sdp));
+    return splitInto4Chunks(compressed);
+  }
+
+  function decompressSdp(compressedString) {
+    return JSON.parse(LZString.decompressFromEncodedURIComponent(compressedString));
+  }
+
+  function waitForIceGathering() {
+    return new Promise(resolve => {
+      if (pc.iceGatheringState === 'complete') resolve();
+      else {
+        const check = () => {
+          if (pc.iceGatheringState === 'complete') {
+            pc.removeEventListener('icegatheringstatechange', check);
+            resolve();
+          }
+        };
+        pc.addEventListener('icegatheringstatechange', check);
+      }
+    });
+  }
+
+  function renderQrCode(data) {
+    const qrContainer = document.getElementById('qrcode');
+    qrContainer.innerHTML = "";
+    new QRCode(qrContainer, {
+      text: data,
+      width: 220,
+      height: 220,
+      correctLevel: QRCode.CorrectLevel.L
+    });
+  }
+
+  function switchQrTab(index) {
+    document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+      btn.classList.toggle('active', i === index);
+    });
+    if (currentQrChunks[index]) {
+      renderQrCode(currentQrChunks[index]);
+    }
+  }
+
+  async function startMultiScanner(onComplete) {
+    receivedChunks = {};
+    isScanningComplete = false;
+    updateScanTrackerUI();
+    setStep('step-scan-qr');
+
+    html5QrcodeScanner = new Html5Qrcode("reader");
+    const qrConfig = { fps: 15, qrbox: { width: 220, height: 220 } };
+
+    const handleScan = (decodedText) => {
+      if (isScanningComplete) return;
+
+      const p1 = decodedText.indexOf('|');
+      const p2 = decodedText.indexOf('|', p1 + 1);
+
+      if (p1 !== -1 && p2 !== -1) {
+        const index = parseInt(decodedText.substring(0, p1), 10);
+        const total = parseInt(decodedText.substring(p1 + 1, p2), 10);
+        const chunkData = decodedText.substring(p2 + 1);
+
+        if (!isNaN(index) && total === TOTAL_PARTS) {
+          if (!receivedChunks[index]) {
+            receivedChunks[index] = chunkData;
+            updateScanTrackerUI();
+
+            if (Object.keys(receivedChunks).length === TOTAL_PARTS) {
+              isScanningComplete = true;
+              html5QrcodeScanner.stop().then(() => {
+                document.getElementById('reader').innerHTML = "";
+                let fullString = "";
+                for (let i = 0; i < TOTAL_PARTS; i++) {
+                  fullString += receivedChunks[i];
+                }
+                onComplete(fullString);
+              });
+            }
+          }
+        }
+      }
+    };
+
+    try {
+      await html5QrcodeScanner.start({ facingMode: "environment" }, qrConfig, handleScan, () => {});
+    } catch (e) {
+      await html5QrcodeScanner.start({ facingMode: "user" }, qrConfig, handleScan, () => {});
+    }
+  }
+
+  function updateScanTrackerUI() {
+    for (let i = 0; i < TOTAL_PARTS; i++) {
+      const pill = document.getElementById(`track-${i}`);
+      if (receivedChunks[i]) {
+        pill.classList.add('scanned');
+        pill.textContent = `✓ Part ${i+1}`;
+      } else {
+        pill.classList.remove('scanned');
+        pill.textContent = `Part ${i+1}`;
+      }
+    }
+    const count = Object.keys(receivedChunks).length;
+    statusEl.textContent = `Scanned ${count}/${TOTAL_PARTS} QR codes`;
+  }
+
+  async function initHost() {
+    statusEl.textContent = "Gathering network candidates...";
+    dataChannel = pc.createDataChannel("chat");
+    bindDataChannelEvents(dataChannel);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitForIceGathering();
+
+    currentQrChunks = compressSdp(pc.localDescription);
+    setStep('step-show-qr');
+    switchQrTab(0);
+
+    qrInstruction.textContent = "Show all 4 QRs (tabs above) to Peer B to scan.";
+    document.getElementById('scan-response-btn').style.display = 'block';
+    statusEl.textContent = "Offer QRs generated (4 Parts)";
+  }
+
+  function startHostScanner() {
+    startMultiScanner(async (fullAnswerString) => {
+      statusEl.textContent = "All 4 parts scanned! Connecting...";
+      const answer = decompressSdp(fullAnswerString);
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+  }
+
+  function initJoiner() {
+    pc.ondatachannel = (e) => {
+      dataChannel = e.channel;
+      bindDataChannelEvents(dataChannel);
+    };
+
+    startMultiScanner(async (fullOfferString) => {
+      statusEl.textContent = "Offer accepted. Generating Answer QRs...";
+      const offer = decompressSdp(fullOfferString);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitForIceGathering();
+
+      currentQrChunks = compressSdp(pc.localDescription);
+      setStep('step-show-qr');
+      switchQrTab(0);
+
+      qrInstruction.textContent = "Show these 4 Answer QRs back to Peer A.";
+      document.getElementById('scan-response-btn').style.display = 'none';
+      statusEl.textContent = "Answer QRs Ready (4 Parts)";
+    });
+  }
+
+  function bindDataChannelEvents(channel) {
+    channel.onopen = () => {
+      statusEl.textContent = "Connected Direct (P2P)!";
+      setStep('step-chat');
+    };
+    channel.onmessage = (e) => addMessage(e.data, 'remote');
+  }
+
+  function sendMessage() {
+    const input = document.getElementById('msgInput');
+    const text = input.value.trim();
+    if (text && dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send(text);
+      addMessage(text, 'local');
+      input.value = '';
+    }
+  }
+
+  function addMessage(text, type) {
+    const box = document.getElementById('messages');
+    const msg = document.createElement('div');
+    msg.className = `msg ${type}`;
+    msg.textContent = text;
+    box.appendChild(msg);
+    box.scrollTop = box.scrollHeight;
+  }
+</script>
+</body>
+</html>
